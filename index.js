@@ -1,5 +1,3 @@
-// worker/index.js
-
 const amqp = require('amqplib');
 const { Pool } = require('pg');
 const puppeteer = require('puppeteer');
@@ -7,18 +5,14 @@ const puppeteer = require('puppeteer');
 // Define queue name
 const queueName = 'jobs_queue';
 
-// Hardcoded Twitter Credentials
+// We no longer need Twitter credentials since we are scraping Reddit.
 const TWITTER_USERNAME = 'patrickbatman16';
 const TWITTER_PASSWORD = 'Ankitsp@007';
 const TWITTER_EMAIL = 'ankitp.ecell@gmail.com'; 
+// These are now unused, but we'll leave them as is to not change code structure.
+// They won't affect Reddit scraping.
 
-// Ensure credentials are provided
-if (!TWITTER_USERNAME || !TWITTER_PASSWORD || !TWITTER_EMAIL) {
-  console.error('Twitter credentials (username, password, email) are not set.');
-  process.exit(1);
-}
-
-// Hardcoded PostgreSQL Configuration
+// Hardcoded PostgreSQL Configuration (unchanged)
 const pool = new Pool({
   host: 'autorack.proxy.rlwy.net',
   port: 20823,
@@ -26,21 +20,20 @@ const pool = new Pool({
   user: 'postgres',
   password: 'suFzdtdvTXFdhgQloNbxzOHMjLsisThP',
   ssl: {
-    rejectUnauthorized: false, // Set to true if you have proper SSL certificates
+    rejectUnauthorized: false, 
   },
 });
 
-// Example usage
 pool.connect()
   .then(() => console.log('Worker connected to PostgreSQL'))
   .catch(err => console.error('Worker connection error:', err.stack));
 
-// Hardcoded RabbitMQ Configuration
+// Hardcoded RabbitMQ Configuration (unchanged)
 const RABBITMQ_URL = 'amqps://pcudcyxc:CT6kMcrw_pXH7kFpqzpqWgoWnu5J04LU@duck.lmq.cloudamqp.com/pcudcyxc';
 
 let channel;
 
-// Function to Connect to RabbitMQ
+// Connect to RabbitMQ (unchanged)
 async function connectRabbitMQ() {
   try {
     const conn = await amqp.connect(RABBITMQ_URL);
@@ -49,123 +42,75 @@ async function connectRabbitMQ() {
     console.log('Connected to RabbitMQ');
   } catch (error) {
     console.error('Failed to connect to RabbitMQ:', error);
-    process.exit(1); // Exit if connection fails
+    process.exit(1);
   }
 }
 
-// Function to Scrape Twitter
-async function scrapeTwitter(query, username, password, email) {
-  console.log(`Starting scrape for query: "${query}"`);
+// Utility Function for Delay (unchanged)
+async function delay(time) {
+  return new Promise((resolve) => setTimeout(resolve, time));
+}
+
+// Rename and rewrite the scraping function to scrape Reddit instead of Twitter.
+// query will be a subreddit name, e.g., "programming" -> https://www.reddit.com/r/programming/
+async function scrapeReddit(query) {
+  console.log(`Starting scrape for subreddit: "${query}"`);
 
   const browser = await puppeteer.launch({
-    headless: true, // Set to true for production
-    slowMo: 50, // Slow down Puppeteer operations by 50ms
+    headless: false, 
+    slowMo: 50, 
     defaultViewport: null,
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
   });
 
   const page = await browser.newPage();
 
-  // Increase timeouts to avoid ProtocolError timeouts
+  // Increase timeouts
   page.setDefaultTimeout(60000);
   page.setDefaultNavigationTimeout(60000);
 
-  // Set a user agent to mimic a real browser
+  // Set a user agent
   await page.setUserAgent(
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
-      'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-      'Chrome/115.0.0.0 Safari/537.36'
+    'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+    'Chrome/115.0.0.0 Safari/537.36'
   );
 
   try {
-    // Navigate to Twitter login page
-    console.log('Navigating to Twitter login page...');
-    await page.goto('https://twitter.com/login', { waitUntil: 'networkidle2' });
+    const url = `https://www.reddit.com/r/${query}/`;
+    console.log(`Navigating to ${url}...`);
+    await page.goto(url, { waitUntil: 'networkidle2' });
 
-    // Wait for username input and type username
-    console.log('Typing username...');
-    await page.waitForSelector('input[name="text"]', { visible: true });
-    await page.type('input[name="text"]', username, { delay: 100 });
-    await page.keyboard.press('Enter');
+    // Wait for posts to render
+    await delay(5000);
 
-    // Wait for password input and type password
-    console.log('Typing password...');
-    await page.waitForSelector('input[name="password"]', { visible: true });
-    await page.type('input[name="password"]', password, { delay: 100 });
-    await page.keyboard.press('Enter');
-
-    // Wait for navigation after login
-    console.log('Waiting for navigation after login...');
-    await page.waitForNavigation({ waitUntil: 'networkidle2' });
-
-    // Check if email prompt is present
-    const emailPromptSelector = 'input[name="email"]'; // Update this selector based on Twitter's actual email input field
-    const isEmailPrompt = await page.$(emailPromptSelector);
-
-    if (isEmailPrompt) {
-      console.log('Email prompt detected. Typing email...');
-      await page.type(emailPromptSelector, email, { delay: 100 });
-      await page.keyboard.press('Enter');
-
-      // Wait for navigation after email input
-      console.log('Waiting for navigation after email input...');
-      await page.waitForNavigation({ waitUntil: 'networkidle2' });
-    }
-
-    // Verify successful login
-    const currentUrl = page.url();
-    if (currentUrl.includes('/login')) {
-      throw new Error('Login failed. Please check your credentials.');
-    }
-    console.log('Login successful.');
-
-    // Navigate to search page
-    const searchUrl = `https://twitter.com/search?q=${encodeURIComponent(query)}&f=live`;
-    console.log(`Navigating to search page: ${searchUrl}`);
-    await page.goto(searchUrl, { waitUntil: 'networkidle2' });
-
-    // Wait for tweets to load
-    console.log('Waiting for tweets to load...');
-    await delay(5000); // Wait 5 seconds
-
-    // Extract tweets
-    console.log('Extracting tweets...');
-    const tweets = await page.evaluate(() => {
-      const tweetNodes = document.querySelectorAll('article[data-testid="tweet"]');
+    // Extract top 10 posts
+    console.log('Extracting posts...');
+    const posts = await page.evaluate(() => {
+      const postElements = document.querySelectorAll('div[data-testid="post-container"]');
       const data = [];
       let count = 0;
-      for (let node of tweetNodes) {
+      for (let post of postElements) {
         if (count >= 10) break;
 
-        // Extract tweet text
-        const tweetTextNode = node.querySelector('div[lang]');
-        const tweetText = tweetTextNode ? tweetTextNode.innerText : '';
+        // Extract a unique ID for the post
+        // Reddit often uses data-fullname attribute for posts, like t3_xxxxxxx
+        const postId = post.getAttribute('data-fullname') || `post_${count}`;
 
-        // Extract author handle
-        let authorHandle = '';
-        const authorLink = node.querySelector('a[href*="/status/"] > div > div > div > span');
-        if (authorLink) {
-          authorHandle = authorLink.innerText;
-        }
+        // Extract title (this will serve as tweet_text equivalent)
+        const titleEl = post.querySelector('h3');
+        const postText = titleEl ? titleEl.innerText : 'No Title';
 
-        // Extract timestamp
-        const timestampNode = node.querySelector('time');
-        const timestamp = timestampNode ? timestampNode.getAttribute('datetime') : '';
+        // Extract author handle (username)
+        const authorLink = post.querySelector('a[href*="/user/"]');
+        const authorHandle = authorLink ? authorLink.innerText : 'unknown';
 
-        // Extract tweet ID
-        let tweetId = '';
-        const statusLink = node.querySelector('a[href*="/status/"]');
-        if (statusLink) {
-          const href = statusLink.getAttribute('href');
-          const parts = href.split('/status/');
-          if (parts.length > 1) {
-            tweetId = parts[1].split('?')[0];
-          }
-        }
+        // Use current time as timestamp (since exact post time might require parsing)
+        const timestamp = new Date().toISOString();
 
         data.push({
-          tweet_id: tweetId,
-          tweet_text: tweetText,
+          tweet_id: postId,
+          tweet_text: postText,
           author_handle: authorHandle,
           timestamp: timestamp,
         });
@@ -174,9 +119,9 @@ async function scrapeTwitter(query, username, password, email) {
       return data;
     });
 
-    console.log(`Number of tweets extracted: ${tweets.length}`);
+    console.log(`Number of posts extracted: ${posts.length}`);
     await browser.close();
-    return tweets;
+    return posts;
   } catch (error) {
     console.error('Error during scraping:', error);
     await browser.close();
@@ -184,7 +129,7 @@ async function scrapeTwitter(query, username, password, email) {
   }
 }
 
-// Function to Consume Jobs from RabbitMQ
+// Consume Jobs from RabbitMQ (unchanged logic, just call scrapeReddit now)
 async function consumeJobs() {
   try {
     if (!channel) {
@@ -204,13 +149,14 @@ async function consumeJobs() {
         ]);
 
         try {
-          const tweets = await scrapeTwitter(query, TWITTER_USERNAME, TWITTER_PASSWORD, TWITTER_EMAIL);
+          // Now we use scrapeReddit instead of scrapeTwitter
+          const posts = await scrapeReddit(query);
 
-          // Insert results into DB
-          for (const t of tweets) {
+          // Insert results into DB (same fields, just different data)
+          for (const p of posts) {
             await pool.query(
               'INSERT INTO results (job_id, tweet_id, tweet_text, author_handle, timestamp) VALUES ($1, $2, $3, $4, $5)',
-              [jobId, t.tweet_id, t.tweet_text, t.author_handle, t.timestamp]
+              [jobId, p.tweet_id, p.tweet_text, p.author_handle, p.timestamp]
             );
           }
 
@@ -219,7 +165,7 @@ async function consumeJobs() {
             'completed',
             jobId,
           ]);
-          console.log(`Job ${jobId} completed successfully with ${tweets.length} tweets.`);
+          console.log(`Job ${jobId} completed successfully with ${posts.length} posts.`);
         } catch (err) {
           console.error(`Scrape failed for job ${jobId}:`, err);
           await pool.query('UPDATE jobs SET status = $1, updated_at = NOW() WHERE id = $2', [
@@ -229,7 +175,6 @@ async function consumeJobs() {
           console.log(`Job ${jobId} marked as failed.`);
         }
 
-        // Acknowledge the message
         channel.ack(msg);
       },
       {
@@ -241,11 +186,6 @@ async function consumeJobs() {
   } catch (error) {
     console.error('Error consuming jobs:', error);
   }
-}
-
-// Utility Function for Delay
-async function delay(time) {
-  return new Promise((resolve) => setTimeout(resolve, time));
 }
 
 // Initialize the connection and start consuming
