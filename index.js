@@ -83,14 +83,18 @@ async function scrapeReddit(query) {
 
     // Log the page title to verify correct navigation
     const pageTitle = await page.title();
-    console.log(`Page Title: ${pageTitle}`);
+    console.log(`Page Title: "${pageTitle}"`);
 
-    // Wait for posts to load by waiting for the post title selector with increased timeout
+    if (!pageTitle || pageTitle.trim() === '') {
+      console.warn('Page title is empty. Possible redirection or block.');
+    }
+
+    // Wait for posts to load by waiting for the post container selector with increased timeout
     try {
-      await page.waitForSelector('a[data-testid="post-title-text"]', { timeout: 30000 }); // 30 seconds
+      await page.waitForSelector('div[data-testid="search-post-unit"]', { timeout: 30000 }); // 30 seconds
     } catch (err) {
-      console.warn('Primary selector not found, attempting alternative selector "h3"...');
-      await page.waitForSelector('h3', { timeout: 15000 }); // 15 seconds
+      console.warn('Post containers not found.');
+      throw err;
     }
 
     // Optional: Scroll to load more posts
@@ -99,42 +103,31 @@ async function scrapeReddit(query) {
 
     console.log('Extracting posts...');
     const posts = await page.evaluate(() => {
-      // Try primary selector
-      let postTitleElements = document.querySelectorAll('a[data-testid="post-title-text"]');
-
-      // If primary selector yields no results, try alternative selector
-      if (postTitleElements.length === 0) {
-        postTitleElements = document.querySelectorAll('h3');
-      }
-
+      // Select all post containers
+      const postContainers = document.querySelectorAll('div[data-testid="search-post-unit"]');
       const data = [];
       let count = 0;
-      for (let el of postTitleElements) {
+      for (let container of postContainers) {
         if (count >= 10) break;
 
-        // Find the closest post container
-        const parent = el.closest('div[data-testid="search-post-unit"]');
-        if (!parent) continue; // Skip if parent container is not found
+        // Find the post title element
+        const titleElement = container.querySelector('a[data-testid="post-title-text"]');
+        if (!titleElement) continue;
 
-        // Extract tweet_id from href
-        const postLink = el.getAttribute('href') || '';
-        const postIdMatch = postLink.match(/comments\/([^/]+)\//);
+        const tweet_text = titleElement.innerText.trim() || 'No Title';
+        const tweet_href = titleElement.getAttribute('href') || '';
+        const postIdMatch = tweet_href.match(/comments\/([^/]+)\//);
         const tweet_id = postIdMatch ? `t3_${postIdMatch[1]}` : `post_${count}`;
 
-        const tweet_text = el.innerText.trim() || 'No Title';
-
-        // Extract author handle
-        const authorLink = parent.querySelector('a[href*="/user/"]');
+        // Find the author handle
+        const authorLink = container.querySelector('a[href*="/user/"]');
         const author_handle = authorLink ? authorLink.innerText.trim() : 'unknown';
 
-        // Extract timestamp
-        const timeElement = parent.querySelector('a[data-click-id="timestamp"] > time');
+        // Find the timestamp
+        const timeElement = container.querySelector('time');
         let timestamp = new Date().toISOString(); // Default to current time
-        if (timeElement) {
-          const datetime = timeElement.getAttribute('datetime');
-          if (datetime) {
-            timestamp = new Date(datetime).toISOString();
-          }
+        if (timeElement && timeElement.getAttribute('datetime')) {
+          timestamp = new Date(timeElement.getAttribute('datetime')).toISOString();
         }
 
         data.push({
