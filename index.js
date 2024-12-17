@@ -52,7 +52,7 @@ async function scrapeReddit(query) {
   console.log(`Starting scrape for query: "${query}"`);
 
   const browser = await puppeteer.launch({
-    headless: true, // Ensure headless mode is enabled
+    headless: false, // Ensure headless mode is enabled
     defaultViewport: null,
     args: [
       '--no-sandbox',
