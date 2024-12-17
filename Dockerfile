@@ -1,7 +1,7 @@
 # Use an official Node.js runtime as a parent image
 FROM node:16-slim
 
-# Install dependencies for Puppeteer
+# Install necessary dependencies for Puppeteer and Chromium
 RUN apt-get update && apt-get install -y \
     gconf-service \
     libasound2 \
@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     libdbus-1-3 \
     libexpat1 \
     libfontconfig1 \
+    libgbm1 \                 
     libgcc1 \
     libgconf-2-4 \
     libgdk-pixbuf2.0-0 \
@@ -34,6 +35,8 @@ RUN apt-get update && apt-get install -y \
     libxrender1 \
     libxss1 \
     libxtst6 \
+    libgstreamer1.0-0 \               
+    libgstreamer-plugins-base1.0-0 \  
     ca-certificates \
     fonts-liberation \
     libappindicator1 \
@@ -41,7 +44,8 @@ RUN apt-get update && apt-get install -y \
     lsb-release \
     xdg-utils \
     wget \
-    && rm -rf /var/lib/apt/lists/*
+    --no-install-recommends && \
+    rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app
@@ -49,14 +53,11 @@ WORKDIR /app
 # Copy package.json and package-lock.json
 COPY package*.json ./
 
-# Install dependencies
+# Install Node.js dependencies
 RUN npm install
 
 # Copy the rest of the application code
 COPY . .
-
-# Expose the port the app runs on
-EXPOSE 3001
 
 # Start the worker
 CMD ["node", "index.js"]

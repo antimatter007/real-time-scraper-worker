@@ -52,7 +52,7 @@ async function scrapeReddit(query) {
   console.log(`Starting scrape for query: "${query}"`);
 
   const browser = await puppeteer.launch({
-    headless: false, // Ensure headless mode is enabled
+    headless: true, // Ensure headless mode is enabled
     defaultViewport: null,
     args: [
       '--no-sandbox',
@@ -84,7 +84,7 @@ async function scrapeReddit(query) {
     // Wait for posts to load by waiting for the post title selector
     await page.waitForSelector('a[data-testid="post-title"]', { timeout: 15000 });
 
-    // Optionally scroll to load more posts
+    // Optional: Scroll to load more posts
     await page.evaluate(() => { window.scrollBy(0, window.innerHeight); });
     await delay(3000); // Wait for additional posts to load
 
@@ -113,11 +113,12 @@ async function scrapeReddit(query) {
 
         // Extract timestamp
         let timestamp = new Date().toISOString(); // Default to current time
-        const timeElement = parent.querySelector('a[data-click-id="timestamp"] > time');
+        const timeElement = parent ? parent.querySelector('a[data-click-id="timestamp"] > time') : null;
         if (timeElement) {
           const datetime = timeElement.getAttribute('datetime');
           if (datetime) {
-            timestamp = new Date(datetime * 1000).toISOString();
+            // Reddit's datetime attribute is in ISO format
+            timestamp = new Date(datetime).toISOString();
           }
         }
 
