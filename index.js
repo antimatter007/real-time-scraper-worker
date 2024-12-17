@@ -7,7 +7,7 @@ const puppeteer = require('puppeteer');
 // Define queue name
 const queueName = 'jobs_queue';
 
-// Hardcoded Twitter credentials
+// Hardcoded Twitter Credentials
 const TWITTER_USERNAME = 'patrickbatman16';
 const TWITTER_PASSWORD = 'Ankitsp@007';
 const TWITTER_EMAIL = 'ankitp.ecell@gmail.com'; 
@@ -18,21 +18,45 @@ if (!TWITTER_USERNAME || !TWITTER_PASSWORD || !TWITTER_EMAIL) {
   process.exit(1);
 }
 
-// Configure the PostgreSQL pool with hardcoded values
+// Hardcoded PostgreSQL Configuration
 const pool = new Pool({
   host: 'autorack.proxy.rlwy.net',
   database: 'railway',
   user: 'postgres',
   password: 'fzBKMaLxqMFZKWLXEnnAoqSwUAMslaMm',
   port: 29248,
+  ssl: {
+    rejectUnauthorized: false, // Adjust based on your PostgreSQL SSL configuration
+  },
 });
 
-// Utility function for delay
+// Hardcoded RabbitMQ Configuration
+const RABBITMQ_URL = 'amqps://pcudcyxc:CT6kMcrw_pXH7kFpqzpqWgoWnu5J04LU@duck.lmq.cloudamqp.com/pcudcyxc';
+
+let channel;
+
+// Function to Connect to RabbitMQ
+async function connectRabbitMQ() {
+  try {
+    const conn = await amqp.connect(RABBITMQ_URL);
+    channel = await conn.createChannel();
+    await channel.assertQueue(queueName, { durable: true });
+    console.log('Connected to RabbitMQ');
+  } catch (error) {
+    console.error('Failed to connect to RabbitMQ:', error);
+    process.exit(1); // Exit if connection fails
+  }
+}
+
+// Initialize RabbitMQ Connection
+connectRabbitMQ();
+
+// Utility Function for Delay
 async function delay(time) {
   return new Promise((resolve) => setTimeout(resolve, time));
 }
 
-// Function to scrape Twitter
+// Function to Scrape Twitter
 async function scrapeTwitter(query, username, password, email) {
   console.log(`Starting scrape for query: "${query}"`);
 
@@ -163,17 +187,9 @@ async function scrapeTwitter(query, username, password, email) {
   }
 }
 
-// Function to consume jobs from RabbitMQ
+// Function to Consume Jobs from RabbitMQ
 async function consumeJobs() {
   try {
-    // Connect to RabbitMQ using the hardcoded URL
-    const conn = await amqp.connect('amqps://pcudcyxc:CT6kMcrw_pXH7kFpqzpqWgoWnu5J04LU@duck.lmq.cloudamqp.com/pcudcyxc');
-    const channel = await conn.createChannel();
-    await channel.assertQueue(queueName, { durable: true });
-    channel.prefetch(1);
-
-    console.log('Worker is waiting for messages...');
-
     channel.consume(
       queueName,
       async (msg) => {
@@ -220,10 +236,12 @@ async function consumeJobs() {
         noAck: false,
       }
     );
+
+    console.log('Worker is waiting for messages...');
   } catch (error) {
-    console.error('Error connecting to RabbitMQ:', error);
+    console.error('Error consuming jobs:', error);
   }
 }
 
-// Start consuming jobs
+// Start Consuming Jobs
 consumeJobs().catch(console.error);
