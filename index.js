@@ -54,84 +54,65 @@ async function delay(time) {
 // Rename and rewrite the scraping function to scrape Reddit instead of Twitter.
 // query will be a subreddit name, e.g., "programming" -> https://www.reddit.com/r/programming/
 async function scrapeReddit(query) {
-  console.log(`Starting scrape for subreddit: "${query}"`);
+  console.log(`Starting scrape for query: "${query}"`);
 
   const browser = await puppeteer.launch({
-    headless: true, // enable headless
-    slowMo: 50,
+    headless: true,
     defaultViewport: null,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-gpu',
-      '--disable-dev-shm-usage',
-    ],
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu', '--disable-dev-shm-usage'],
   });
 
   const page = await browser.newPage();
 
-  // Increase timeouts
   page.setDefaultTimeout(60000);
   page.setDefaultNavigationTimeout(60000);
 
-  // Set a user agent
   await page.setUserAgent(
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
-    'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-    'Chrome/115.0.0.0 Safari/537.36'
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
   );
 
-  try {
-    const url = `https://www.reddit.com/r/${query}/`;
-    console.log(`Navigating to ${url}...`);
-    await page.goto(url, { waitUntil: 'networkidle2' });
+  const url = `https://www.reddit.com/search?q=${encodeURIComponent(query)}`;
+  console.log(`Navigating to ${url}...`);
+  await page.goto(url, { waitUntil: 'networkidle2' });
 
-    // Wait for posts to render
-    await delay(5000);
+  // Wait a bit for posts to load
+  await delay(5000);
 
-    // Extract top 10 posts
-    console.log('Extracting posts...');
-    const posts = await page.evaluate(() => {
-      const postElements = document.querySelectorAll('div[data-testid="post-container"]');
-      const data = [];
-      let count = 0;
-      for (let post of postElements) {
-        if (count >= 10) break;
+  // Optionally scroll to load more posts
+  await page.evaluate(() => window.scrollBy(0, 1000));
+  await delay(3000);
 
-        // Extract a unique ID for the post
-        // Reddit often uses data-fullname attribute for posts, like t3_xxxxxxx
-        const postId = post.getAttribute('data-fullname') || `post_${count}`;
+  console.log('Extracting posts...');
+  const posts = await page.evaluate(() => {
+    const postElements = document.querySelectorAll('div[data-testid="post-container"]');
+    const data = [];
+    let count = 0;
+    for (let post of postElements) {
+      if (count >= 10) break;
 
-        // Extract title (this will serve as tweet_text equivalent)
-        const titleEl = post.querySelector('h3');
-        const postText = titleEl ? titleEl.innerText : 'No Title';
+      const postId = post.getAttribute('data-fullname') || `post_${count}`;
+      const titleEl = post.querySelector('h3');
+      const postText = titleEl ? titleEl.innerText : 'No Title';
 
-        // Extract author handle (username)
-        const authorLink = post.querySelector('a[href*="/user/"]');
-        const authorHandle = authorLink ? authorLink.innerText : 'unknown';
+      const authorLink = post.querySelector('a[href*="/user/"]');
+      const authorHandle = authorLink ? authorLink.innerText : 'unknown';
 
-        // Use current time as timestamp (since exact post time might require parsing)
-        const timestamp = new Date().toISOString();
+      const timestamp = new Date().toISOString();
 
-        data.push({
-          tweet_id: postId,
-          tweet_text: postText,
-          author_handle: authorHandle,
-          timestamp: timestamp,
-        });
-        count++;
-      }
-      return data;
-    });
+      data.push({
+        tweet_id: postId,
+        tweet_text: postText,
+        author_handle: authorHandle,
+        timestamp: timestamp,
+      });
+      count++;
+    }
+    return data;
+  });
 
-    console.log(`Number of posts extracted: ${posts.length}`);
-    await browser.close();
-    return posts;
-  } catch (error) {
-    console.error('Error during scraping:', error);
-    await browser.close();
-    throw error;
-  }
+  console.log(`Number of posts extracted: ${posts.length}`);
+  await browser.close();
+  return posts;
 }
 
 // Consume Jobs from RabbitMQ (unchanged logic, just call scrapeReddit now)
