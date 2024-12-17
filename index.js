@@ -59,7 +59,6 @@ async function scrapeReddit(query) {
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-blink-features=AutomationControlled',
-      '--disable-gpu',
       '--disable-dev-shm-usage',
       '--disable-extensions',
       '--disable-infobars',
@@ -69,12 +68,18 @@ async function scrapeReddit(query) {
 
   const page = await browser.newPage();
 
-  // Set a realistic user-agent and accept language headers
-  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
-    'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-    'Chrome/115.0.0.0 Safari/537.36');
-  await page.setExtraHTTPHeaders({
-    'Accept-Language': 'en-US,en;q=0.9'
+  // Set User-Agent and headers to appear more human
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36');
+  await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
+
+  // Optional: Log all requests
+  page.on('request', request => {
+    console.log(`Request: ${request.method()} ${request.url()}`);
+  });
+
+  // Optional: Log failed requests
+  page.on('requestfailed', request => {
+    console.log(`Request failed: ${request.method()} ${request.url()} - ${request.failure().errorText}`);
   });
 
   page.setDefaultTimeout(60000);
@@ -82,45 +87,41 @@ async function scrapeReddit(query) {
 
   const url = `https://www.reddit.com/search?q=${encodeURIComponent(query)}&sort=relevance&t=all`;
   console.log(`Navigating to ${url}...`);
-  
+
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded' });
-    
-    // Optional: Wait a bit to let Reddit load dynamic content
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    
-    // Debugging screenshot
+    console.log('Navigation done. Taking a screenshot...');
     const screenshotPath = path.join(__dirname, `screenshot_${Date.now()}.png`);
     await page.screenshot({ path: screenshotPath, fullPage: true });
     console.log(`Screenshot saved to ${screenshotPath}`);
 
+    // Log the page title
     const pageTitle = await page.title();
     console.log(`Page Title: "${pageTitle}"`);
-    if (!pageTitle || pageTitle.trim() === '') {
-      console.warn('Page title is empty. Possible redirection or block.');
-    }
 
-    // Check page content for captcha or block messages
+    // Get HTML content for debugging
     const htmlContent = await page.content();
+    console.log('HTML content snippet:', htmlContent.substring(0, 2000)); // log first 2000 chars
+
+    // Check if we hit a CAPTCHA or some block page
     if (htmlContent.includes('are you a human') || htmlContent.includes('captcha')) {
-      console.warn('It looks like we hit a CAPTCHA or human verification page.');
-      // Handle CAPTCHA here if possible or abort.
+      console.warn('Potential CAPTCHA or human verification encountered.');
+      // Handle the captcha scenario here or return early.
+      await browser.close();
+      return [];
     }
 
-    // Attempt to find the search post units
+    console.log('Waiting for search results...');
+    // Increase delay before waiting for selector
+    await new Promise(r => setTimeout(r, 5000));
+
     await page.waitForSelector('div[data-testid="search-post-unit"]', { timeout: 60000 });
-    console.log('Post containers found.');
+    console.log('Post containers found. Extracting data...');
 
-    // Scroll to load more if needed
-    await page.evaluate(() => { window.scrollBy(0, window.innerHeight); });
-    await page.waitForTimeout(3000);
-
-    console.log('Extracting posts...');
     const posts = await page.evaluate(() => {
       const postContainers = document.querySelectorAll('div[data-testid="search-post-unit"]');
       const data = [];
       let count = 0;
-
       for (let container of postContainers) {
         if (count >= 10) break; // Limit to 10 posts
 
@@ -136,7 +137,7 @@ async function scrapeReddit(query) {
         const author_handle = authorLink ? authorLink.innerText.trim() : 'unknown';
 
         const timeElement = container.querySelector('time');
-        let timestamp = new Date().toISOString();
+        let timestamp = new Date().toISOString(); 
         if (timeElement && timeElement.getAttribute('datetime')) {
           timestamp = new Date(timeElement.getAttribute('datetime')).toISOString();
         }
