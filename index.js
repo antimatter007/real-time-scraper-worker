@@ -57,10 +57,15 @@ async function scrapeReddit(query) {
   console.log(`Starting scrape for subreddit: "${query}"`);
 
   const browser = await puppeteer.launch({
-    headless: false, 
-    slowMo: 50, 
+    headless: true, // enable headless
+    slowMo: 50,
     defaultViewport: null,
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-gpu',
+      '--disable-dev-shm-usage',
+    ],
   });
 
   const page = await browser.newPage();
