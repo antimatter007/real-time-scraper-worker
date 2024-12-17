@@ -1,63 +1,33 @@
-# Use an official Node.js runtime as a parent image
-FROM node:16-slim
+# Start from a lightweight Python image
+FROM python:3.11-slim
 
-# Install necessary dependencies for Puppeteer and Chromium
+# Set environment variables to ensure non-interactive installs
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Update and install any necessary system dependencies for psycopg2 and ssl
+# psycopg2 requires libpq-dev and build-essential to compile, also install ca-certificates for secure requests
 RUN apt-get update && apt-get install -y \
-    gconf-service \
-    libasound2 \
-    libatk1.0-0 \
-    libc6 \
-    libcairo2 \
-    libcups2 \
-    libdbus-1-3 \
-    libexpat1 \
-    libfontconfig1 \
-    libgbm1 \                  
-    libgcc1 \
-    libgconf-2-4 \
-    libgdk-pixbuf2.0-0 \
-    libglib2.0-0 \
-    libgtk-3-0 \
-    libnspr4 \
-    libpango-1.0-0 \
-    libpangocairo-1.0-0 \
-    libstdc++6 \
-    libx11-6 \
-    libx11-xcb1 \
-    libxcb1 \
-    libxcomposite1 \
-    libxcursor1 \
-    libxdamage1 \
-    libxext6 \
-    libxfixes3 \
-    libxi6 \
-    libxrandr2 \
-    libxrender1 \
-    libxss1 \
-    libxtst6 \
-    libgstreamer1.0-0 \                
-    libgstreamer-plugins-base1.0-0 \    
+    build-essential \
+    libpq-dev \
     ca-certificates \
-    fonts-liberation \
-    libappindicator1 \
-    libnss3 \
-    lsb-release \
-    xdg-utils \
-    wget \
-    --no-install-recommends && \
-    rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app
 
-# Copy package.json and package-lock.json
-COPY package*.json ./
+# Copy the requirements file first to leverage Docker's caching if dependencies haven't changed
+COPY requirements.txt ./
 
-# Install Node.js dependencies
-RUN npm install
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the application code
 COPY . .
 
-# Start the worker
-CMD ["node", "index.js"]
+# Set environment variables if needed for your application
+# ENV RABBITMQ_URL=amqps://...
+# ENV PG_HOST=...
+# etc.
+
+# Run the worker
+CMD ["python", "worker.py"]
