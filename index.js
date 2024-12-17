@@ -63,12 +63,13 @@ async function scrapeReddit(query) {
   });
 
   const page = await browser.newPage();
-
   page.setDefaultTimeout(60000);
   page.setDefaultNavigationTimeout(60000);
 
   await page.setUserAgent(
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
+    'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+    'Chrome/115.0.0.0 Safari/537.36'
   );
 
   const url = `https://www.reddit.com/search?q=${encodeURIComponent(query)}`;
@@ -78,26 +79,24 @@ async function scrapeReddit(query) {
   // Wait a bit for posts to load
   await delay(5000);
 
-  // Optionally scroll to load more posts
-  await page.evaluate(() => window.scrollBy(0, 1000));
+  // Optional: scroll to load more posts if needed
+  await page.evaluate(() => { window.scrollBy(0, 2000); });
   await delay(3000);
 
   console.log('Extracting posts...');
   const posts = await page.evaluate(() => {
-    const postElements = document.querySelectorAll('div[data-testid="post-container"]');
+    // Try selecting h3 elements that usually contain post titles in search results
+    const titleEls = document.querySelectorAll('h3');
     const data = [];
     let count = 0;
-    for (let post of postElements) {
+    for (let el of titleEls) {
       if (count >= 10) break;
 
-      const postId = post.getAttribute('data-fullname') || `post_${count}`;
-      const titleEl = post.querySelector('h3');
-      const postText = titleEl ? titleEl.innerText : 'No Title';
-
-      const authorLink = post.querySelector('a[href*="/user/"]');
-      const authorHandle = authorLink ? authorLink.innerText : 'unknown';
-
+      const postText = el.innerText || 'No Title';
+      // Without a stable selector for author, we set it as 'unknown'
+      const authorHandle = 'unknown';
       const timestamp = new Date().toISOString();
+      const postId = `post_${count}`;
 
       data.push({
         tweet_id: postId,
