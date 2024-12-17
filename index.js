@@ -1,3 +1,5 @@
+// worker/index.js
+
 const amqp = require('amqplib');
 const { Pool } = require('pg');
 const puppeteer = require('puppeteer');
@@ -5,14 +7,7 @@ const puppeteer = require('puppeteer');
 // Define queue name
 const queueName = 'jobs_queue';
 
-// We no longer need Twitter credentials since we are scraping Reddit.
-const TWITTER_USERNAME = 'patrickbatman16';
-const TWITTER_PASSWORD = 'Ankitsp@007';
-const TWITTER_EMAIL = 'ankitp.ecell@gmail.com'; 
-// These are now unused, but we'll leave them as is to not change code structure.
-// They won't affect Reddit scraping.
-
-// Hardcoded PostgreSQL Configuration (unchanged)
+// Hardcoded PostgreSQL Configuration
 const pool = new Pool({
   host: 'autorack.proxy.rlwy.net',
   port: 20823,
@@ -20,20 +15,21 @@ const pool = new Pool({
   user: 'postgres',
   password: 'suFzdtdvTXFdhgQloNbxzOHMjLsisThP',
   ssl: {
-    rejectUnauthorized: false, 
+    rejectUnauthorized: false, // Set to true if you have proper SSL certificates
   },
 });
 
+// Connect to PostgreSQL
 pool.connect()
   .then(() => console.log('Worker connected to PostgreSQL'))
   .catch(err => console.error('Worker connection error:', err.stack));
 
-// Hardcoded RabbitMQ Configuration (unchanged)
+// Hardcoded RabbitMQ Configuration
 const RABBITMQ_URL = 'amqps://pcudcyxc:CT6kMcrw_pXH7kFpqzpqWgoWnu5J04LU@duck.lmq.cloudamqp.com/pcudcyxc';
 
 let channel;
 
-// Connect to RabbitMQ (unchanged)
+// Function to Connect to RabbitMQ
 async function connectRabbitMQ() {
   try {
     const conn = await amqp.connect(RABBITMQ_URL);
@@ -42,79 +38,111 @@ async function connectRabbitMQ() {
     console.log('Connected to RabbitMQ');
   } catch (error) {
     console.error('Failed to connect to RabbitMQ:', error);
-    process.exit(1);
+    process.exit(1); // Exit if connection fails
   }
 }
 
-// Utility Function for Delay (unchanged)
+// Utility Function for Delay
 async function delay(time) {
   return new Promise((resolve) => setTimeout(resolve, time));
 }
 
-// Rename and rewrite the scraping function to scrape Reddit instead of Twitter.
-// query will be a subreddit name, e.g., "programming" -> https://www.reddit.com/r/programming/
+// Function to Scrape Reddit Using Search URL
 async function scrapeReddit(query) {
   console.log(`Starting scrape for query: "${query}"`);
 
   const browser = await puppeteer.launch({
-    headless: true,
+    headless: true, // Ensure headless mode is enabled
     defaultViewport: null,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu', '--disable-dev-shm-usage'],
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-gpu',
+      '--disable-dev-shm-usage',
+    ],
   });
 
   const page = await browser.newPage();
+
+  // Increase timeouts
   page.setDefaultTimeout(60000);
   page.setDefaultNavigationTimeout(60000);
 
+  // Set a user agent
   await page.setUserAgent(
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
     'AppleWebKit/537.36 (KHTML, like Gecko) ' +
     'Chrome/115.0.0.0 Safari/537.36'
   );
 
-  const url = `https://www.reddit.com/search?q=${encodeURIComponent(query)}`;
-  console.log(`Navigating to ${url}...`);
-  await page.goto(url, { waitUntil: 'networkidle2' });
+  try {
+    // Navigate to Reddit's search page
+    const url = `https://www.reddit.com/search?q=${encodeURIComponent(query)}&sort=relevance&t=all`;
+    console.log(`Navigating to ${url}...`);
+    await page.goto(url, { waitUntil: 'networkidle2' });
 
-  // Wait a bit for posts to load
-  await delay(5000);
+    // Wait for posts to load by waiting for the post title selector
+    await page.waitForSelector('a[data-testid="post-title"]', { timeout: 15000 });
 
-  // Optional: scroll to load more posts if needed
-  await page.evaluate(() => { window.scrollBy(0, 2000); });
-  await delay(3000);
+    // Optionally scroll to load more posts
+    await page.evaluate(() => { window.scrollBy(0, window.innerHeight); });
+    await delay(3000); // Wait for additional posts to load
 
-  console.log('Extracting posts...');
-  const posts = await page.evaluate(() => {
-    // Try selecting h3 elements that usually contain post titles in search results
-    const titleEls = document.querySelectorAll('h3');
-    const data = [];
-    let count = 0;
-    for (let el of titleEls) {
-      if (count >= 10) break;
+    console.log('Extracting posts...');
+    const posts = await page.evaluate(() => {
+      const postTitleElements = document.querySelectorAll('a[data-testid="post-title"]');
+      const data = [];
+      let count = 0;
+      for (let el of postTitleElements) {
+        if (count >= 10) break;
 
-      const postText = el.innerText || 'No Title';
-      // Without a stable selector for author, we set it as 'unknown'
-      const authorHandle = 'unknown';
-      const timestamp = new Date().toISOString();
-      const postId = `post_${count}`;
+        const tweet_id = el.getAttribute('href') || `post_${count}`;
+        const tweet_text = el.innerText || 'No Title';
 
-      data.push({
-        tweet_id: postId,
-        tweet_text: postText,
-        author_handle: authorHandle,
-        timestamp: timestamp,
-      });
-      count++;
-    }
-    return data;
-  });
+        // Traverse up the DOM to find the author
+        let author_handle = 'unknown';
+        let parent = el.parentElement;
+        while (parent) {
+          const authorLink = parent.querySelector('a[href*="/user/"]');
+          if (authorLink) {
+            author_handle = authorLink.innerText;
+            break;
+          }
+          parent = parent.parentElement;
+        }
 
-  console.log(`Number of posts extracted: ${posts.length}`);
-  await browser.close();
-  return posts;
+        // Extract timestamp
+        let timestamp = new Date().toISOString(); // Default to current time
+        const timeElement = parent.querySelector('a[data-click-id="timestamp"] > time');
+        if (timeElement) {
+          const datetime = timeElement.getAttribute('datetime');
+          if (datetime) {
+            timestamp = new Date(datetime * 1000).toISOString();
+          }
+        }
+
+        data.push({
+          tweet_id,
+          tweet_text,
+          author_handle,
+          timestamp,
+        });
+        count++;
+      }
+      return data;
+    });
+
+    console.log(`Number of posts extracted: ${posts.length}`);
+    await browser.close();
+    return posts;
+  } catch (error) {
+    console.error('Error during scraping:', error);
+    await browser.close();
+    throw error;
+  }
 }
 
-// Consume Jobs from RabbitMQ (unchanged logic, just call scrapeReddit now)
+// Function to Consume Jobs from RabbitMQ
 async function consumeJobs() {
   try {
     if (!channel) {
@@ -134,10 +162,14 @@ async function consumeJobs() {
         ]);
 
         try {
-          // Now we use scrapeReddit instead of scrapeTwitter
+          // Scrape Reddit using the updated function
           const posts = await scrapeReddit(query);
 
-          // Insert results into DB (same fields, just different data)
+          if (posts.length === 0) {
+            console.warn(`No posts found for job ${jobId} with query "${query}"`);
+          }
+
+          // Insert results into DB
           for (const p of posts) {
             await pool.query(
               'INSERT INTO results (job_id, tweet_id, tweet_text, author_handle, timestamp) VALUES ($1, $2, $3, $4, $5)',
@@ -160,6 +192,7 @@ async function consumeJobs() {
           console.log(`Job ${jobId} marked as failed.`);
         }
 
+        // Acknowledge the message
         channel.ack(msg);
       },
       {
