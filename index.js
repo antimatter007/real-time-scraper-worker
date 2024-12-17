@@ -3,6 +3,8 @@
 const amqp = require('amqplib');
 const { Pool } = require('pg');
 const puppeteer = require('puppeteer');
+const fs = require('fs');
+const path = require('path');
 
 // Define queue name
 const queueName = 'jobs_queue';
@@ -52,65 +54,76 @@ async function scrapeReddit(query) {
   console.log(`Starting scrape for query: "${query}"`);
 
   const browser = await puppeteer.launch({
-    headless: true, // Ensure headless mode is enabled
+    headless: true,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
+      '--disable-blink-features=AutomationControlled',
       '--disable-gpu',
       '--disable-dev-shm-usage',
       '--disable-extensions',
       '--disable-infobars',
-      '--window-position=0,0',
-      '--ignore-certifcate-errors',
-      '--ignore-certifcate-errors-spki-list',
-      '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
-        'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-        'Chrome/115.0.0.0 Safari/537.36',
+      '--window-size=1920,1080',
     ],
   });
 
   const page = await browser.newPage();
 
-  // Increase timeouts
-  page.setDefaultTimeout(60000); // 60 seconds
-  page.setDefaultNavigationTimeout(60000); // 60 seconds
+  // Set a realistic user-agent and accept language headers
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
+    'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+    'Chrome/115.0.0.0 Safari/537.36');
+  await page.setExtraHTTPHeaders({
+    'Accept-Language': 'en-US,en;q=0.9'
+  });
 
+  page.setDefaultTimeout(60000);
+  page.setDefaultNavigationTimeout(60000);
+
+  const url = `https://www.reddit.com/search?q=${encodeURIComponent(query)}&sort=relevance&t=all`;
+  console.log(`Navigating to ${url}...`);
+  
   try {
-    // Navigate to Reddit's search page
-    const url = `https://www.reddit.com/search?q=${encodeURIComponent(query)}&sort=relevance&t=all`;
-    console.log(`Navigating to ${url}...`);
-    await page.goto(url, { waitUntil: 'networkidle2' });
+    await page.goto(url, { waitUntil: 'domcontentloaded' });
+    
+    // Optional: Wait a bit to let Reddit load dynamic content
+    await page.waitForTimeout(5000);
+    
+    // Debugging screenshot
+    const screenshotPath = path.join(__dirname, `screenshot_${Date.now()}.png`);
+    await page.screenshot({ path: screenshotPath, fullPage: true });
+    console.log(`Screenshot saved to ${screenshotPath}`);
 
-    // Log the page title to verify correct navigation
     const pageTitle = await page.title();
     console.log(`Page Title: "${pageTitle}"`);
-
     if (!pageTitle || pageTitle.trim() === '') {
       console.warn('Page title is empty. Possible redirection or block.');
     }
 
-    // Wait for posts to load by waiting for the post container selector with increased timeout
-    try {
-      await page.waitForSelector('div[data-testid="search-post-unit"]', { timeout: 30000 }); // 30 seconds
-    } catch (err) {
-      console.warn('Post containers not found.');
-      throw err;
+    // Check page content for captcha or block messages
+    const htmlContent = await page.content();
+    if (htmlContent.includes('are you a human') || htmlContent.includes('captcha')) {
+      console.warn('It looks like we hit a CAPTCHA or human verification page.');
+      // Handle CAPTCHA here if possible or abort.
     }
 
-    // Optional: Scroll to load more posts
+    // Attempt to find the search post units
+    await page.waitForSelector('div[data-testid="search-post-unit"]', { timeout: 60000 });
+    console.log('Post containers found.');
+
+    // Scroll to load more if needed
     await page.evaluate(() => { window.scrollBy(0, window.innerHeight); });
-    await delay(3000); // Wait for additional posts to load
+    await page.waitForTimeout(3000);
 
     console.log('Extracting posts...');
     const posts = await page.evaluate(() => {
-      // Select all post containers
       const postContainers = document.querySelectorAll('div[data-testid="search-post-unit"]');
       const data = [];
       let count = 0;
-      for (let container of postContainers) {
-        if (count >= 10) break;
 
-        // Find the post title element
+      for (let container of postContainers) {
+        if (count >= 10) break; // Limit to 10 posts
+
         const titleElement = container.querySelector('a[data-testid="post-title-text"]');
         if (!titleElement) continue;
 
@@ -119,23 +132,16 @@ async function scrapeReddit(query) {
         const postIdMatch = tweet_href.match(/comments\/([^/]+)\//);
         const tweet_id = postIdMatch ? `t3_${postIdMatch[1]}` : `post_${count}`;
 
-        // Find the author handle
         const authorLink = container.querySelector('a[href*="/user/"]');
         const author_handle = authorLink ? authorLink.innerText.trim() : 'unknown';
 
-        // Find the timestamp
         const timeElement = container.querySelector('time');
-        let timestamp = new Date().toISOString(); // Default to current time
+        let timestamp = new Date().toISOString();
         if (timeElement && timeElement.getAttribute('datetime')) {
           timestamp = new Date(timeElement.getAttribute('datetime')).toISOString();
         }
 
-        data.push({
-          tweet_id,
-          tweet_text,
-          author_handle,
-          timestamp,
-        });
+        data.push({ tweet_id, tweet_text, author_handle, timestamp });
         count++;
       }
       return data;
