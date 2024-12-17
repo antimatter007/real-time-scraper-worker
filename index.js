@@ -1,130 +1,104 @@
-// worker/index.js
+const axios = require('axios');
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+puppeteer.use(StealthPlugin());
 
-const amqp = require('amqplib');
-const { Pool } = require('pg');
-const puppeteer = require('puppeteer');
-const fs = require('fs');
-const path = require('path');
+// Example: Retrieve a token beforehand or pass it in as a parameter.
+async function getRedditApiToken() {
+  // This is a placeholder. You'll need to implement OAuth flow or use saved tokens.
+  return process.env.REDDIT_OAUTH_TOKEN || null; 
+}
 
-// Define queue name
-const queueName = 'jobs_queue';
-
-// Hardcoded PostgreSQL Configuration
-const pool = new Pool({
-  host: 'autorack.proxy.rlwy.net',
-  port: 20823,
-  database: 'railway',
-  user: 'postgres',
-  password: 'suFzdtdvTXFdhgQloNbxzOHMjLsisThP',
-  ssl: {
-    rejectUnauthorized: false, // Set to true if you have proper SSL certificates
-  },
-});
-
-// Connect to PostgreSQL
-pool.connect()
-  .then(() => console.log('Worker connected to PostgreSQL'))
-  .catch(err => console.error('Worker connection error:', err.stack));
-
-// Hardcoded RabbitMQ Configuration
-const RABBITMQ_URL = 'amqps://pcudcyxc:CT6kMcrw_pXH7kFpqzpqWgoWnu5J04LU@duck.lmq.cloudamqp.com/pcudcyxc';
-
-let channel;
-
-// Function to Connect to RabbitMQ
-async function connectRabbitMQ() {
+async function fetchFromOfficialApi(query, token) {
+  console.log('Attempting Official Reddit API...');
+  const url = `https://oauth.reddit.com/search?q=${encodeURIComponent(query)}&limit=10&sort=relevance&t=all`;
+  
   try {
-    const conn = await amqp.connect(RABBITMQ_URL);
-    channel = await conn.createChannel();
-    await channel.assertQueue(queueName, { durable: true });
-    console.log('Connected to RabbitMQ');
-  } catch (error) {
-    console.error('Failed to connect to RabbitMQ:', error);
-    process.exit(1); // Exit if connection fails
+    const headers = {
+      'User-Agent': 'YourApp/1.0 (by u/YourRedditUsername)',
+      Authorization: `bearer ${token}`
+    };
+    const response = await axios.get(url, { headers });
+
+    if (response.status === 200 && response.data && response.data.data && response.data.data.children.length > 0) {
+      console.log(`Official API returned ${response.data.data.children.length} results.`);
+      return response.data.data.children.map(post => ({
+        tweet_id: post.data.id,
+        tweet_text: post.data.title,
+        author_handle: post.data.author,
+        timestamp: new Date(post.data.created_utc * 1000).toISOString()
+      }));
+    } else {
+      console.warn('Official API returned empty results or unexpected structure.');
+      return null;
+    }
+  } catch (err) {
+    console.error('Official API request failed:', err.message);
+    return null;
   }
 }
 
-// Utility Function for Delay
-async function delay(time) {
-  return new Promise((resolve) => setTimeout(resolve, time));
+async function fetchFromPublicJson(query) {
+  console.log('Attempting Public JSON Endpoint...');
+  const url = `https://www.reddit.com/search.json?q=${encodeURIComponent(query)}&limit=10&sort=relevance&t=all`;
+  
+  try {
+    const headers = {
+      'User-Agent': 'YourApp/1.0 (by u/YourRedditUsername)'
+    };
+    const response = await axios.get(url, { headers });
+
+    if (response.status === 200 && response.data && response.data.data && response.data.data.children.length > 0) {
+      console.log(`Public JSON returned ${response.data.data.children.length} results.`);
+      return response.data.data.children.map(post => ({
+        tweet_id: post.data.id,
+        tweet_text: post.data.title,
+        author_handle: post.data.author,
+        timestamp: new Date(post.data.created_utc * 1000).toISOString()
+      }));
+    } else {
+      console.warn('Public JSON returned empty results or unexpected structure.');
+      return null;
+    }
+  } catch (err) {
+    console.error('Public JSON request failed:', err.message);
+    return null;
+  }
 }
 
-// Function to Scrape Reddit Using Search URL
-async function scrapeReddit(query) {
-  console.log(`Starting scrape for query: "${query}"`);
-
+async function scrapeWithPuppeteer(query) {
+  console.log('Attempting Puppeteer Scraping...');
   const browser = await puppeteer.launch({
     headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-blink-features=AutomationControlled',
-      '--disable-dev-shm-usage',
-      '--disable-extensions',
-      '--disable-infobars',
-      '--window-size=1920,1080',
-    ],
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
-
+  
   const page = await browser.newPage();
-
-  // Set User-Agent and headers to appear more human
-  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36');
-  await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
-
-  // Optional: Log all requests
-  page.on('request', request => {
-    console.log(`Request: ${request.method()} ${request.url()}`);
-  });
-
-  // Optional: Log failed requests
-  page.on('requestfailed', request => {
-    console.log(`Request failed: ${request.method()} ${request.url()} - ${request.failure().errorText}`);
-  });
-
-  page.setDefaultTimeout(60000);
-  page.setDefaultNavigationTimeout(60000);
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+                          '(KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36');
 
   const url = `https://www.reddit.com/search?q=${encodeURIComponent(query)}&sort=relevance&t=all`;
-  console.log(`Navigating to ${url}...`);
+  await page.goto(url, { waitUntil: 'domcontentloaded' });
+  
+  // Wait a bit
+  await new Promise(r => setTimeout(r, 5000));
+  
+  // Check if there's captcha
+  const htmlContent = await page.content();
+  if (htmlContent.includes('are you a human') || htmlContent.includes('captcha')) {
+    console.warn('Encountered CAPTCHA during Puppeteer scraping.');
+    await browser.close();
+    return null;
+  }
 
   try {
-    await page.goto(url, { waitUntil: 'domcontentloaded' });
-    console.log('Navigation done. Taking a screenshot...');
-    const screenshotPath = path.join(__dirname, `screenshot_${Date.now()}.png`);
-    await page.screenshot({ path: screenshotPath, fullPage: true });
-    console.log(`Screenshot saved to ${screenshotPath}`);
-
-    // Log the page title
-    const pageTitle = await page.title();
-    console.log(`Page Title: "${pageTitle}"`);
-
-    // Get HTML content for debugging
-    const htmlContent = await page.content();
-    console.log('HTML content snippet:', htmlContent.substring(0, 2000)); // log first 2000 chars
-
-    // Check if we hit a CAPTCHA or some block page
-    if (htmlContent.includes('are you a human') || htmlContent.includes('captcha')) {
-      console.warn('Potential CAPTCHA or human verification encountered.');
-      // Handle the captcha scenario here or return early.
-      await browser.close();
-      return [];
-    }
-
-    console.log('Waiting for search results...');
-    // Increase delay before waiting for selector
-    await new Promise(r => setTimeout(r, 5000));
-
     await page.waitForSelector('div[data-testid="search-post-unit"]', { timeout: 60000 });
-    console.log('Post containers found. Extracting data...');
-
     const posts = await page.evaluate(() => {
       const postContainers = document.querySelectorAll('div[data-testid="search-post-unit"]');
       const data = [];
       let count = 0;
       for (let container of postContainers) {
-        if (count >= 10) break; // Limit to 10 posts
-
+        if (count >= 10) break;
         const titleElement = container.querySelector('a[data-testid="post-title-text"]');
         if (!titleElement) continue;
 
@@ -148,84 +122,43 @@ async function scrapeReddit(query) {
       return data;
     });
 
-    console.log(`Number of posts extracted: ${posts.length}`);
+    console.log(`Puppeteer scraping extracted ${posts.length} posts.`);
     await browser.close();
     return posts;
-  } catch (error) {
-    console.error('Error during scraping:', error);
+  } catch (err) {
+    console.error('Puppeteer scraping failed:', err.message);
     await browser.close();
-    throw error;
+    return null;
   }
 }
 
-// Function to Consume Jobs from RabbitMQ
-async function consumeJobs() {
-  try {
-    if (!channel) {
-      throw new Error('Channel is not defined');
-    }
-    channel.consume(
-      queueName,
-      async (msg) => {
-        if (!msg) return;
-        const { jobId, query } = JSON.parse(msg.content.toString());
-        console.log(`Received job ${jobId} with query "${query}"`);
+async function getRedditPosts(query) {
+  console.log(`Fetching Reddit posts for query: "${query}"`);
+  const token = await getRedditApiToken();
+  
+  let results = null;
 
-        // Mark job as in_progress
-        await pool.query('UPDATE jobs SET status = $1, updated_at = NOW() WHERE id = $2', [
-          'in_progress',
-          jobId,
-        ]);
-
-        try {
-          // Scrape Reddit using the updated function
-          const posts = await scrapeReddit(query);
-
-          if (posts.length === 0) {
-            console.warn(`No posts found for job ${jobId} with query "${query}"`);
-          }
-
-          // Insert results into DB
-          for (const p of posts) {
-            await pool.query(
-              'INSERT INTO results (job_id, tweet_id, tweet_text, author_handle, timestamp) VALUES ($1, $2, $3, $4, $5)',
-              [jobId, p.tweet_id, p.tweet_text, p.author_handle, p.timestamp]
-            );
-          }
-
-          // Update job status to completed
-          await pool.query('UPDATE jobs SET status = $1, updated_at = NOW() WHERE id = $2', [
-            'completed',
-            jobId,
-          ]);
-          console.log(`Job ${jobId} completed successfully with ${posts.length} posts.`);
-        } catch (err) {
-          console.error(`Scrape failed for job ${jobId}:`, err);
-          await pool.query('UPDATE jobs SET status = $1, updated_at = NOW() WHERE id = $2', [
-            'failed',
-            jobId,
-          ]);
-          console.log(`Job ${jobId} marked as failed.`);
-        }
-
-        // Acknowledge the message
-        channel.ack(msg);
-      },
-      {
-        noAck: false,
-      }
-    );
-
-    console.log('Worker is waiting for messages...');
-  } catch (error) {
-    console.error('Error consuming jobs:', error);
+  // 1. Try Official API if we have a token
+  if (token) {
+    results = await fetchFromOfficialApi(query, token);
+    if (results && results.length > 0) return results;
   }
+
+  // 2. If Official API fails or no token, try Public JSON
+  results = await fetchFromPublicJson(query);
+  if (results && results.length > 0) return results;
+
+  // 3. If Public JSON fails, fallback to Puppeteer
+  results = await scrapeWithPuppeteer(query);
+  if (results && results.length > 0) return results;
+
+  // If everything fails, return empty or throw error
+  console.warn('All methods failed to fetch results.');
+  return [];
 }
 
-// Initialize the connection and start consuming
-async function init() {
-  await connectRabbitMQ();
-  await consumeJobs();
-}
-
-init().catch(console.error);
+// Example usage:
+(async () => {
+  const posts = await getRedditPosts('twitter');
+  console.log('Final Results:', posts);
+})();
