@@ -53,27 +53,27 @@ async function scrapeReddit(query) {
 
   const browser = await puppeteer.launch({
     headless: true, // Ensure headless mode is enabled
-    defaultViewport: null,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-gpu',
       '--disable-dev-shm-usage',
+      '--disable-extensions',
+      '--disable-infobars',
+      '--window-position=0,0',
+      '--ignore-certifcate-errors',
+      '--ignore-certifcate-errors-spki-list',
+      '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
+        'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+        'Chrome/115.0.0.0 Safari/537.36',
     ],
   });
 
   const page = await browser.newPage();
 
   // Increase timeouts
-  page.setDefaultTimeout(60000);
-  page.setDefaultNavigationTimeout(60000);
-
-  // Set a user agent
-  await page.setUserAgent(
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
-    'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-    'Chrome/115.0.0.0 Safari/537.36'
-  );
+  page.setDefaultTimeout(60000); // 60 seconds
+  page.setDefaultNavigationTimeout(60000); // 60 seconds
 
   try {
     // Navigate to Reddit's search page
@@ -81,8 +81,17 @@ async function scrapeReddit(query) {
     console.log(`Navigating to ${url}...`);
     await page.goto(url, { waitUntil: 'networkidle2' });
 
-    // Wait for posts to load by waiting for the post title selector
-    await page.waitForSelector('a[data-testid="post-title"]', { timeout: 15000 });
+    // Log the page title to verify correct navigation
+    const pageTitle = await page.title();
+    console.log(`Page Title: ${pageTitle}`);
+
+    // Wait for posts to load by waiting for the post title selector with increased timeout
+    try {
+      await page.waitForSelector('a[data-testid="post-title-text"]', { timeout: 30000 }); // 30 seconds
+    } catch (err) {
+      console.warn('Primary selector not found, attempting alternative selector "h3"...');
+      await page.waitForSelector('h3', { timeout: 15000 }); // 15 seconds
+    }
 
     // Optional: Scroll to load more posts
     await page.evaluate(() => { window.scrollBy(0, window.innerHeight); });
@@ -90,34 +99,40 @@ async function scrapeReddit(query) {
 
     console.log('Extracting posts...');
     const posts = await page.evaluate(() => {
-      const postTitleElements = document.querySelectorAll('a[data-testid="post-title"]');
+      // Try primary selector
+      let postTitleElements = document.querySelectorAll('a[data-testid="post-title-text"]');
+
+      // If primary selector yields no results, try alternative selector
+      if (postTitleElements.length === 0) {
+        postTitleElements = document.querySelectorAll('h3');
+      }
+
       const data = [];
       let count = 0;
       for (let el of postTitleElements) {
         if (count >= 10) break;
 
-        const tweet_id = el.getAttribute('href') || `post_${count}`;
-        const tweet_text = el.innerText || 'No Title';
+        // Find the closest post container
+        const parent = el.closest('div[data-testid="search-post-unit"]');
+        if (!parent) continue; // Skip if parent container is not found
 
-        // Traverse up the DOM to find the author
-        let author_handle = 'unknown';
-        let parent = el.parentElement;
-        while (parent) {
-          const authorLink = parent.querySelector('a[href*="/user/"]');
-          if (authorLink) {
-            author_handle = authorLink.innerText;
-            break;
-          }
-          parent = parent.parentElement;
-        }
+        // Extract tweet_id from href
+        const postLink = el.getAttribute('href') || '';
+        const postIdMatch = postLink.match(/comments\/([^/]+)\//);
+        const tweet_id = postIdMatch ? `t3_${postIdMatch[1]}` : `post_${count}`;
+
+        const tweet_text = el.innerText.trim() || 'No Title';
+
+        // Extract author handle
+        const authorLink = parent.querySelector('a[href*="/user/"]');
+        const author_handle = authorLink ? authorLink.innerText.trim() : 'unknown';
 
         // Extract timestamp
+        const timeElement = parent.querySelector('a[data-click-id="timestamp"] > time');
         let timestamp = new Date().toISOString(); // Default to current time
-        const timeElement = parent ? parent.querySelector('a[data-click-id="timestamp"] > time') : null;
         if (timeElement) {
           const datetime = timeElement.getAttribute('datetime');
           if (datetime) {
-            // Reddit's datetime attribute is in ISO format
             timestamp = new Date(datetime).toISOString();
           }
         }
