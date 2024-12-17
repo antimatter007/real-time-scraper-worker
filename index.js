@@ -87,7 +87,7 @@ async function scrapeReddit(query) {
     await page.goto(url, { waitUntil: 'domcontentloaded' });
     
     // Optional: Wait a bit to let Reddit load dynamic content
-    await page.waitForTimeout(5000);
+    await new Promise(resolve => setTimeout(resolve, 5000));
     
     // Debugging screenshot
     const screenshotPath = path.join(__dirname, `screenshot_${Date.now()}.png`);
