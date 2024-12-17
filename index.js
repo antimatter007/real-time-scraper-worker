@@ -48,14 +48,6 @@ async function connectRabbitMQ() {
   }
 }
 
-// Initialize RabbitMQ Connection
-connectRabbitMQ();
-
-// Utility Function for Delay
-async function delay(time) {
-  return new Promise((resolve) => setTimeout(resolve, time));
-}
-
 // Function to Scrape Twitter
 async function scrapeTwitter(query, username, password, email) {
   console.log(`Starting scrape for query: "${query}"`);
@@ -190,6 +182,9 @@ async function scrapeTwitter(query, username, password, email) {
 // Function to Consume Jobs from RabbitMQ
 async function consumeJobs() {
   try {
+    if (!channel) {
+      throw new Error('Channel is not defined');
+    }
     channel.consume(
       queueName,
       async (msg) => {
@@ -243,5 +238,15 @@ async function consumeJobs() {
   }
 }
 
-// Start Consuming Jobs
-consumeJobs().catch(console.error);
+// Utility Function for Delay
+async function delay(time) {
+  return new Promise((resolve) => setTimeout(resolve, time));
+}
+
+// Initialize the connection and start consuming
+async function init() {
+  await connectRabbitMQ();
+  await consumeJobs();
+}
+
+init().catch(console.error);
