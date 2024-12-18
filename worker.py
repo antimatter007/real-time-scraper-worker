@@ -36,7 +36,7 @@ def get_random_user_agent():
     return ua
 
 class RedditScraper:
-    def __init__(self, proxy=None, timeout=10, random_user_agent=True):
+    def __init__(self, proxy=None, timeout=10):
         logging.debug("Initializing RedditScraper...")
         self.session = requests.Session()
         self.timeout = timeout
@@ -45,15 +45,10 @@ class RedditScraper:
             self.session.proxies.update({"http": proxy, "https": proxy})
             logging.debug("Using proxy: %s", proxy)
 
-        if random_user_agent:
-            ua = get_random_user_agent()
-            self.session.headers.update({"User-Agent": ua})
-        else:
-            self.session.headers.update({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                              "AppleWebKit/537.36 (KHTML, like Gecko) "
-                              "Chrome/115.0.0.0 Safari/537.36"
-            })
+        # Use a stable, descriptive user-agent
+        self.session.headers.update({
+            "User-Agent": "MyRedditScraper/1.0 (by u/your_reddit_username)"
+        })
 
         logging.debug("RedditScraper initialized. Headers: %s", self.session.headers)
 
@@ -64,7 +59,7 @@ class RedditScraper:
         """
         logging.debug("Searching Reddit for query='%s', limit=%d", query, limit)
         url = "https://www.reddit.com/search.json"
-        params = {"q": query, "limit": limit, "sort": "relevance", "type": "link"}
+        params = {"q": query, "limit": limit}
 
         try:
             response = self.session.get(url, params=params, timeout=self.timeout)
