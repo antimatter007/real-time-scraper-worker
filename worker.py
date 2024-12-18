@@ -57,22 +57,23 @@ class RedditScraper:
 
         logging.debug("RedditScraper initialized. Headers: %s", self.session.headers)
 
-    def scrape_subreddit(self, subreddit, limit=10):
+    def scrape_search(self, query, limit=10):
         """
-        Mimic the old behavior: fetch top 10 posts from the given subreddit.
-        URL: https://www.reddit.com/r/{subreddit}.json?limit=10
+        Fetch up to `limit` posts related to `query` by using the Reddit search endpoint.
+        URL: https://www.reddit.com/search.json?q=query&limit=10
         """
-        logging.debug("Scraping subreddit '%s' for top %d posts", subreddit, limit)
-        url = f"https://www.reddit.com/r/{subreddit}.json"
-        params = {"limit": limit}
+        logging.debug("Searching Reddit for query='%s', limit=%d", query, limit)
+        url = "https://www.reddit.com/search.json"
+        params = {"q": query, "limit": limit, "sort": "relevance", "type": "link"}
+
         try:
             response = self.session.get(url, params=params, timeout=self.timeout)
             response.raise_for_status()
         except requests.exceptions.HTTPError as http_err:
-            logging.error("HTTP error during subreddit scrape: %s", http_err)
+            logging.error("HTTP error during search: %s", http_err)
             return []
         except Exception as e:
-            logging.error("Error fetching subreddit posts: %s", e)
+            logging.error("Error fetching search results: %s", e)
             return []
 
         data = response.json()
@@ -83,10 +84,9 @@ class RedditScraper:
             if count >= limit:
                 break
             post_data = c.get("data", {})
-            post_id = post_data.get("name", f"post_{count}")  # 'name' is like 't3_xxx'
+            post_id = post_data.get("name", f"post_{count}")  
             post_text = post_data.get("title", "No Title")
             author_handle = post_data.get("author", "unknown")
-            # Reddit provides UTC timestamp directly
             created_utc = post_data.get("created_utc", 0)
             timestamp = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(created_utc))
 
@@ -98,7 +98,7 @@ class RedditScraper:
             })
             count += 1
 
-        logging.info("Scraped %d posts from subreddit '%s'", len(posts), subreddit)
+        logging.info("Search returned %d results for query '%s'", len(posts), query)
         return posts
 
 def store_results_in_db(conn, job_id, posts):
@@ -138,7 +138,7 @@ def process_job(conn, job_id, query):
     update_job_status(conn, job_id, 'in_progress')
 
     scraper = RedditScraper(random_user_agent=True)
-    posts = scraper.scrape_subreddit(query, limit=10)
+    posts = scraper.scrape_search(query, limit=10)
 
     if not posts:
         logging.warning("No posts found or fetch failed for query '%s' (Job %d)", query, job_id)
