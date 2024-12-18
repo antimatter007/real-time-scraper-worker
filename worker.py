@@ -10,7 +10,7 @@ import random
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 
-from sessions import RandomUserAgentSession
+from session import RandomUserAgentSession
 
 # Logging configuration
 logger = logging.getLogger()
