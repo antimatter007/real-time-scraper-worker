@@ -7536,7 +7536,6 @@ USER_AGENTS: Final = (
     "Mozilla/5.0 (Macintosh; U; Intel Mac OS X 10_6; nl-nl) AppleWebKit/531.9 (KHTML, like Gecko) Version/4.0.3 Safari/531.9",
 )
 
-
 def get_agent() -> str:
-    """Return random user agent."""
-    return random.choice(USER_AGENTS)  # noqa: S311
+    """Return a random user agent."""
+    return random.choice(USER_AGENTS)

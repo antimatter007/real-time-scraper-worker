@@ -5,14 +5,17 @@ import requests
 import pika
 import psycopg2
 from psycopg2.extras import execute_values
-from faker import Faker
 import sys
+import random
+from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
 
-# Set up logging to both file and stdout
+from sessions import RandomUserAgentSession
+
+# Logging configuration
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)
 
-# Remove any existing handlers to avoid duplication
 for h in logger.handlers[:]:
     logger.removeHandler(h)
 
@@ -29,72 +32,77 @@ logger.addHandler(stream_handler)
 
 print("Worker script started - initializing...")
 
-def get_random_user_agent():
-    fake = Faker()
-    ua = fake.user_agent()
-    logging.debug("Generated random User-Agent: %s", ua)
-    return ua
+class YARS:
+    __slots__ = ("session", "proxy", "timeout")
 
-class RedditScraper:
     def __init__(self, proxy=None, timeout=10):
-        logging.debug("Initializing RedditScraper...")
-        self.session = requests.Session()
-        self.timeout = timeout
+        self.session = RandomUserAgentSession()
         self.proxy = proxy
+        self.timeout = timeout
+
+        retries = Retry(
+            total=5,
+            backoff_factor=2,
+            status_forcelist=[429, 500, 502, 503, 504],
+        )
+        self.session.mount("https://", HTTPAdapter(max_retries=retries))
+
         if proxy:
             self.session.proxies.update({"http": proxy, "https": proxy})
-            logging.debug("Using proxy: %s", proxy)
 
-        # Use a stable, descriptive user-agent
-        self.session.headers.update({
-            "User-Agent": "MyRedditScraper/1.0 (by u/your_reddit_username)"
-        })
-
-        logging.debug("RedditScraper initialized. Headers: %s", self.session.headers)
-
-    def scrape_search(self, query, limit=10):
-        """
-        Fetch up to `limit` posts related to `query` by using the Reddit search endpoint.
-        URL: https://www.reddit.com/search.json?q=query&limit=10
-        """
-        logging.debug("Searching Reddit for query='%s', limit=%d", query, limit)
-        url = "https://www.reddit.com/search.json"
-        params = {"q": query, "limit": limit}
+    def handle_search(self, url, params, after=None, before=None):
+        if after:
+            params["after"] = after
+        if before:
+            params["before"] = before
 
         try:
             response = self.session.get(url, params=params, timeout=self.timeout)
             response.raise_for_status()
-        except requests.exceptions.HTTPError as http_err:
-            logging.error("HTTP error during search: %s", http_err)
-            return []
+            logging.info("Search request successful")
+        except requests.exceptions.HTTPError as e:
+            if response.status_code != 200:
+                logging.info("Search request unsuccessful due to: %s", e)
+                print(f"Failed to fetch search results: {response.status_code}")
+                return []
         except Exception as e:
-            logging.error("Error fetching search results: %s", e)
+            logging.info("Search request error: %s", e)
             return []
 
         data = response.json()
-        posts = []
+        results = []
         children = data.get("data", {}).get("children", [])
-        count = 0
-        for c in children:
-            if count >= limit:
-                break
-            post_data = c.get("data", {})
-            post_id = post_data.get("name", f"post_{count}")  
-            post_text = post_data.get("title", "No Title")
+        for post in children:
+            post_data = post.get("data", {})
+            tweet_id = post_data.get("name", "no_id")
+            tweet_text = post_data.get("title", "No Title")
             author_handle = post_data.get("author", "unknown")
             created_utc = post_data.get("created_utc", 0)
             timestamp = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(created_utc))
 
-            posts.append({
-                "tweet_id": post_id,
-                "tweet_text": post_text,
+            results.append({
+                "tweet_id": tweet_id,
+                "tweet_text": tweet_text,
                 "author_handle": author_handle,
                 "timestamp": timestamp,
             })
-            count += 1
 
-        logging.info("Search returned %d results for query '%s'", len(posts), query)
-        return posts
+        logging.info("Search Results Returned %d Results", len(results))
+        return results
+
+    def search_reddit(self, query, limit=10, after=None, before=None):
+        url = "https://www.reddit.com/search.json"
+        params = {"q": query, "limit": limit, "sort": "relevance", "type": "link"}
+        return self.handle_search(url, params, after, before)
+
+RABBITMQ_URL = "amqps://pcudcyxc:CT6kMcrw_pXH7kFpqzpqWgoWnu5J04LU@duck.lmq.cloudamqp.com/pcudcyxc"
+QUEUE_NAME = "jobs_queue"
+
+PG_HOST = "autorack.proxy.rlwy.net"
+PG_PORT = "20823"
+PG_DB = "railway"
+PG_USER = "postgres"
+PG_PASSWORD = "suFzdtdvTXFdhgQloNbxzOHMjLsisThP"
 
 def store_results_in_db(conn, job_id, posts):
     logging.debug("Storing %d posts in DB for job_id=%d", len(posts), job_id)
@@ -132,8 +140,8 @@ def process_job(conn, job_id, query):
     logging.info("Processing job %d with query '%s'", job_id, query)
     update_job_status(conn, job_id, 'in_progress')
 
-    scraper = RedditScraper(random_user_agent=True)
-    posts = scraper.scrape_search(query, limit=10)
+    scraper = YARS()
+    posts = scraper.search_reddit(query, limit=10)
 
     if not posts:
         logging.warning("No posts found or fetch failed for query '%s' (Job %d)", query, job_id)
@@ -148,18 +156,8 @@ def main():
     print("Entering main function...")
     logging.debug("Entering main function...")
 
-    # Hardcoded credentials (DO NOT CHANGE)
-    RABBITMQ_URL = "amqps://pcudcyxc:CT6kMcrw_pXH7kFpqzpqWgoWnu5J04LU@duck.lmq.cloudamqp.com/pcudcyxc"
-    QUEUE_NAME = "jobs_queue"
-
-    PG_HOST = "autorack.proxy.rlwy.net"
-    PG_PORT = "20823"
-    PG_DB = "railway"
-    PG_USER = "postgres"
-    PG_PASSWORD = "suFzdtdvTXFdhgQloNbxzOHMjLsisThP"
-
+    print("Connecting to PostgreSQL...")
     logging.debug("Connecting to PostgreSQL at %s:%s db=%s user=%s", PG_HOST, PG_PORT, PG_DB, PG_USER)
-    print("Connecting to PostgreSQL...")  
     try:
         conn = psycopg2.connect(
             host=PG_HOST,
@@ -176,8 +174,8 @@ def main():
         print("Failed to connect to PostgreSQL.", e)
         sys.exit(1)
 
-    logging.debug("Connecting to RabbitMQ using URL: %s", RABBITMQ_URL)
     print("Connecting to RabbitMQ...")
+    logging.debug("Connecting to RabbitMQ using URL: %s", RABBITMQ_URL)
     try:
         params = pika.URLParameters(RABBITMQ_URL)
         connection = pika.BlockingConnection(params)
@@ -202,7 +200,6 @@ def main():
         except Exception as e:
             logging.error("Failed to parse message: %s", e)
             print("Failed to parse message:", e)
-            # Acknowledge to avoid infinite loop
             ch.basic_ack(delivery_tag=method.delivery_tag)
             return
 
@@ -211,10 +208,8 @@ def main():
         except Exception as e:
             logging.error("Error processing job %s: %s", job_id, e)
             print(f"Error processing job {job_id}:", e)
-            # Mark job failed if needed
             update_job_status(conn, job_id, 'failed')
 
-        # Acknowledge message
         ch.basic_ack(delivery_tag=method.delivery_tag)
         logging.debug("Job %s acknowledged and completed", job_id)
         print(f"Job {job_id} done and acked")
