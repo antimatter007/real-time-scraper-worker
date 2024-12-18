@@ -8,11 +8,26 @@ from psycopg2.extras import execute_values
 from faker import Faker
 import sys
 
-logging.basicConfig(
-    filename="worker.log",
-    level=logging.DEBUG,  # DEBUG level for detailed information
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
+# Set up logging to both file and stdout
+logger = logging.getLogger()
+logger.setLevel(logging.DEBUG)
+
+# Remove any existing handlers
+for h in logger.handlers[:]:
+    logger.removeHandler(h)
+
+file_handler = logging.FileHandler("worker.log")
+file_handler.setLevel(logging.DEBUG)
+file_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+file_handler.setFormatter(file_formatter)
+logger.addHandler(file_handler)
+
+stream_handler = logging.StreamHandler(sys.stdout)
+stream_handler.setLevel(logging.DEBUG)
+stream_handler.setFormatter(file_formatter)
+logger.addHandler(stream_handler)
+
+print("Worker script started - initializing...")  # This will show in stdout
 
 def get_random_user_agent():
     fake = Faker()
@@ -119,8 +134,10 @@ def process_job(conn, job_id, query):
     logging.info("Job %d completed successfully with %d posts.", job_id, len(posts))
 
 def main():
-    # Hardcoded credentials for RabbitMQ and PostgreSQL
-    # Update these with your actual credentials/hosts
+    print("Entering main function...")  # Will show in stdout
+    logging.debug("Entering main function...")
+
+    # Hardcoded credentials (DO NOT CHANGE)
     RABBITMQ_URL = "amqps://pcudcyxc:CT6kMcrw_pXH7kFpqzpqWgoWnu5J04LU@duck.lmq.cloudamqp.com/pcudcyxc"
     QUEUE_NAME = "jobs_queue"
 
@@ -131,6 +148,7 @@ def main():
     PG_PASSWORD = "suFzdtdvTXFdhgQloNbxzOHMjLsisThP"
 
     logging.debug("Connecting to PostgreSQL at %s:%s db=%s user=%s", PG_HOST, PG_PORT, PG_DB, PG_USER)
+    print("Connecting to PostgreSQL...")  
     try:
         conn = psycopg2.connect(
             host=PG_HOST,
@@ -141,31 +159,39 @@ def main():
             sslmode="require"
         )
         logging.debug("PostgreSQL connection established.")
+        print("PostgreSQL connection established.")
     except Exception as e:
         logging.error("Failed to connect to PostgreSQL: %s", e)
+        print("Failed to connect to PostgreSQL.", e)
         sys.exit(1)
 
     logging.debug("Connecting to RabbitMQ using URL: %s", RABBITMQ_URL)
+    print("Connecting to RabbitMQ...")
     try:
         params = pika.URLParameters(RABBITMQ_URL)
         connection = pika.BlockingConnection(params)
         channel = connection.channel()
         channel.queue_declare(queue=QUEUE_NAME, durable=True)
         logging.debug("RabbitMQ connection established and queue declared.")
+        print("RabbitMQ connected and queue declared.")
     except Exception as e:
         logging.error("Failed to connect to RabbitMQ or declare queue: %s", e)
+        print("Failed to connect to RabbitMQ or declare queue.", e)
         sys.exit(1)
 
     def callback(ch, method, properties, body):
         logging.debug("Received a message from RabbitMQ. Delivery tag: %s", method.delivery_tag)
+        print(f"Message received with delivery tag: {method.delivery_tag}")
         try:
             message = json.loads(body)
             job_id = message['jobId']
             query = message['query']
             logging.info("Received job %s with query '%s'", job_id, query)
+            print(f"Received job {job_id} with query '{query}'")
         except Exception as e:
             logging.error("Failed to parse message: %s", e)
-            # Even if parse fails, acknowledge to not requeue and cause infinite loop
+            print("Failed to parse message:", e)
+            # Acknowledge to avoid infinite loop of re-delivery
             ch.basic_ack(delivery_tag=method.delivery_tag)
             return
 
@@ -173,25 +199,34 @@ def main():
             process_job(conn, job_id, query)
         except Exception as e:
             logging.error("Error processing job %s: %s", job_id, e)
-            # Mark job failed if desired or leave as is
+            print(f"Error processing job {job_id}:", e)
+            # Mark job failed if desired
             update_job_status(conn, job_id, 'failed')
 
         # Acknowledge message
         ch.basic_ack(delivery_tag=method.delivery_tag)
         logging.debug("Job %s acknowledged and completed", job_id)
+        print(f"Job {job_id} done and acked")
 
     channel.basic_consume(queue=QUEUE_NAME, on_message_callback=callback, auto_ack=False)
     logging.info("Worker is waiting for messages. Starting consuming loop...")
+    print("Worker is waiting for messages. Starting consuming loop...")
+
     try:
         channel.start_consuming()
     except KeyboardInterrupt:
         logging.info("Worker was interrupted by KeyboardInterrupt, shutting down.")
+        print("KeyboardInterrupt received, stopping consumer.")
         channel.stop_consuming()
     except Exception as e:
         logging.error("Unexpected error in consuming loop: %s", e)
+        print("Unexpected error in consuming loop:", e)
     finally:
         logging.debug("Closing RabbitMQ connection.")
+        print("Closing RabbitMQ connection.")
         connection.close()
 
 if __name__ == "__main__":
+    print("Worker entrypoint executing...")
+    logging.debug("Worker entrypoint executing...")
     main()
