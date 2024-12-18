@@ -12,7 +12,7 @@ import sys
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)
 
-# Remove any existing handlers
+# Remove any existing handlers to avoid duplication
 for h in logger.handlers[:]:
     logger.removeHandler(h)
 
@@ -27,7 +27,7 @@ stream_handler.setLevel(logging.DEBUG)
 stream_handler.setFormatter(file_formatter)
 logger.addHandler(stream_handler)
 
-print("Worker script started - initializing...")  # This will show in stdout
+print("Worker script started - initializing...")
 
 def get_random_user_agent():
     fake = Faker()
@@ -57,33 +57,49 @@ class RedditScraper:
 
         logging.debug("RedditScraper initialized. Headers: %s", self.session.headers)
 
-    def search_reddit(self, query, limit=10):
-        logging.debug("Starting Reddit search for query='%s', limit=%d", query, limit)
-        url = "https://www.reddit.com/search.json"
-        params = {"q": query, "limit": limit, "sort": "relevance", "type": "link"}
+    def scrape_subreddit(self, subreddit, limit=10):
+        """
+        Mimic the old behavior: fetch top 10 posts from the given subreddit.
+        URL: https://www.reddit.com/r/{subreddit}.json?limit=10
+        """
+        logging.debug("Scraping subreddit '%s' for top %d posts", subreddit, limit)
+        url = f"https://www.reddit.com/r/{subreddit}.json"
+        params = {"limit": limit}
         try:
             response = self.session.get(url, params=params, timeout=self.timeout)
             response.raise_for_status()
         except requests.exceptions.HTTPError as http_err:
-            logging.error("HTTP error during search: %s", http_err)
+            logging.error("HTTP error during subreddit scrape: %s", http_err)
             return []
         except Exception as e:
-            logging.error("Error fetching search results: %s", e)
+            logging.error("Error fetching subreddit posts: %s", e)
             return []
 
         data = response.json()
-        results = []
-        for post in data.get("data", {}).get("children", []):
-            post_data = post.get("data", {})
-            results.append({
-                "tweet_id": post_data.get("id"),
-                "tweet_text": post_data.get("title", ""),
-                "author_handle": post_data.get("author", ""),
-                "timestamp": time.strftime('%Y-%m-%d %H:%M:%S', 
-                           time.gmtime(post_data.get("created_utc", 0))),
+        posts = []
+        children = data.get("data", {}).get("children", [])
+        count = 0
+        for c in children:
+            if count >= limit:
+                break
+            post_data = c.get("data", {})
+            post_id = post_data.get("name", f"post_{count}")  # 'name' is like 't3_xxx'
+            post_text = post_data.get("title", "No Title")
+            author_handle = post_data.get("author", "unknown")
+            # Reddit provides UTC timestamp directly
+            created_utc = post_data.get("created_utc", 0)
+            timestamp = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(created_utc))
+
+            posts.append({
+                "tweet_id": post_id,
+                "tweet_text": post_text,
+                "author_handle": author_handle,
+                "timestamp": timestamp,
             })
-        logging.info("Search returned %d results for query '%s'", len(results), query)
-        return results
+            count += 1
+
+        logging.info("Scraped %d posts from subreddit '%s'", len(posts), subreddit)
+        return posts
 
 def store_results_in_db(conn, job_id, posts):
     logging.debug("Storing %d posts in DB for job_id=%d", len(posts), job_id)
@@ -122,7 +138,7 @@ def process_job(conn, job_id, query):
     update_job_status(conn, job_id, 'in_progress')
 
     scraper = RedditScraper(random_user_agent=True)
-    posts = scraper.search_reddit(query, limit=10)
+    posts = scraper.scrape_subreddit(query, limit=10)
 
     if not posts:
         logging.warning("No posts found or fetch failed for query '%s' (Job %d)", query, job_id)
@@ -134,7 +150,7 @@ def process_job(conn, job_id, query):
     logging.info("Job %d completed successfully with %d posts.", job_id, len(posts))
 
 def main():
-    print("Entering main function...")  # Will show in stdout
+    print("Entering main function...")
     logging.debug("Entering main function...")
 
     # Hardcoded credentials (DO NOT CHANGE)
@@ -191,7 +207,7 @@ def main():
         except Exception as e:
             logging.error("Failed to parse message: %s", e)
             print("Failed to parse message:", e)
-            # Acknowledge to avoid infinite loop of re-delivery
+            # Acknowledge to avoid infinite loop
             ch.basic_ack(delivery_tag=method.delivery_tag)
             return
 
@@ -200,7 +216,7 @@ def main():
         except Exception as e:
             logging.error("Error processing job %s: %s", job_id, e)
             print(f"Error processing job {job_id}:", e)
-            # Mark job failed if desired
+            # Mark job failed if needed
             update_job_status(conn, job_id, 'failed')
 
         # Acknowledge message
