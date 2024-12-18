@@ -5,8 +5,7 @@ import sys
 import pika
 import psycopg2
 from psycopg2.extras import execute_values
-
-from yars.yars import YARS  # Import the YARS class from our yars directory
+import praw
 
 # Logging setup
 logger = logging.getLogger()
@@ -37,6 +36,12 @@ PG_PORT = "20823"
 PG_DB = "railway"
 PG_USER = "postgres"
 PG_PASSWORD = "suFzdtdvTXFdhgQloNbxzOHMjLsisThP"
+
+# Reddit API Credentials (from the app info you provided)
+REDDIT_CLIENT_ID = "eRPKk-aSmujs4tCp6e1-NA"
+REDDIT_CLIENT_SECRET = "2ra2lsTdN2WPwabRBY02pNNXKOoxKg"
+# The user_agent should be a unique string. Include your reddit username or app name.
+REDDIT_USER_AGENT = "ankit:personal use script:1.0 (by u/Legitimate-Picture98)"
 
 def store_results_in_db(conn, job_id, posts):
     logging.debug("Storing %d posts in DB for job_id=%d", len(posts), job_id)
@@ -74,17 +79,42 @@ def process_job(conn, job_id, query):
     logging.info("Processing job %d with query '%s'", job_id, query)
     update_job_status(conn, job_id, 'in_progress')
 
-    scraper = YARS()  # Create YARS instance
-    posts = scraper.search_reddit(query, limit=10)
+    # Initialize PRAW Reddit instance
+    reddit = praw.Reddit(
+        client_id=REDDIT_CLIENT_ID,
+        client_secret=REDDIT_CLIENT_SECRET,
+        user_agent=REDDIT_USER_AGENT
+    )
 
-    if not posts:
-        logging.warning("No posts found or fetch failed for query '%s' (Job %d)", query, job_id)
+    posts_data = []
+    try:
+        # Use subreddit all to search sitewide
+        # You can adjust limit if you want fewer or more results
+        for submission in reddit.subreddit("all").search(query, limit=10, sort="relevance"):
+            tweet_id = f"t3_{submission.id}"
+            tweet_text = submission.title
+            author_handle = str(submission.author) if submission.author else 'unknown'
+            timestamp = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(submission.created_utc))
+
+            posts_data.append({
+                "tweet_id": tweet_id,
+                "tweet_text": tweet_text,
+                "author_handle": author_handle,
+                "timestamp": timestamp
+            })
+    except Exception as e:
+        logging.error("Error fetching posts from Reddit API: %s", e)
         update_job_status(conn, job_id, 'failed')
         return
 
-    store_results_in_db(conn, job_id, posts)
+    if not posts_data:
+        logging.warning("No posts found for query '%s' (Job %d)", query, job_id)
+        update_job_status(conn, job_id, 'failed')
+        return
+
+    store_results_in_db(conn, job_id, posts_data)
     update_job_status(conn, job_id, 'completed')
-    logging.info("Job %d completed successfully with %d posts.", job_id, len(posts))
+    logging.info("Job %d completed successfully with %d posts.", job_id, len(posts_data))
 
 def main():
     print("Entering main function...")
