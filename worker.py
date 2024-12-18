@@ -1,18 +1,14 @@
 import json
 import time
 import logging
-import requests
+import sys
 import pika
 import psycopg2
 from psycopg2.extras import execute_values
-import sys
-import random
-from urllib3.util.retry import Retry
-from requests.adapters import HTTPAdapter
 
-from session import RandomUserAgentSession
+from yars.yars import YARS  # Import the YARS class from our yars directory
 
-# Logging configuration
+# Logging setup
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)
 
@@ -32,69 +28,7 @@ logger.addHandler(stream_handler)
 
 print("Worker script started - initializing...")
 
-class YARS:
-    __slots__ = ("session", "proxy", "timeout")
-
-    def __init__(self, proxy=None, timeout=10):
-        self.session = RandomUserAgentSession()
-        self.proxy = proxy
-        self.timeout = timeout
-
-        retries = Retry(
-            total=5,
-            backoff_factor=2,
-            status_forcelist=[429, 500, 502, 503, 504],
-        )
-        self.session.mount("https://", HTTPAdapter(max_retries=retries))
-
-        if proxy:
-            self.session.proxies.update({"http": proxy, "https": proxy})
-
-    def handle_search(self, url, params, after=None, before=None):
-        if after:
-            params["after"] = after
-        if before:
-            params["before"] = before
-
-        try:
-            response = self.session.get(url, params=params, timeout=self.timeout)
-            response.raise_for_status()
-            logging.info("Search request successful")
-        except requests.exceptions.HTTPError as e:
-            if response.status_code != 200:
-                logging.info("Search request unsuccessful due to: %s", e)
-                print(f"Failed to fetch search results: {response.status_code}")
-                return []
-        except Exception as e:
-            logging.info("Search request error: %s", e)
-            return []
-
-        data = response.json()
-        results = []
-        children = data.get("data", {}).get("children", [])
-        for post in children:
-            post_data = post.get("data", {})
-            tweet_id = post_data.get("name", "no_id")
-            tweet_text = post_data.get("title", "No Title")
-            author_handle = post_data.get("author", "unknown")
-            created_utc = post_data.get("created_utc", 0)
-            timestamp = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(created_utc))
-
-            results.append({
-                "tweet_id": tweet_id,
-                "tweet_text": tweet_text,
-                "author_handle": author_handle,
-                "timestamp": timestamp,
-            })
-
-        logging.info("Search Results Returned %d Results", len(results))
-        return results
-
-    def search_reddit(self, query, limit=10, after=None, before=None):
-        url = "https://www.reddit.com/search.json"
-        params = {"q": query, "limit": limit, "sort": "relevance", "type": "link"}
-        return self.handle_search(url, params, after, before)
-
+# Hardcoded credentials
 RABBITMQ_URL = "amqps://pcudcyxc:CT6kMcrw_pXH7kFpqzpqWgoWnu5J04LU@duck.lmq.cloudamqp.com/pcudcyxc"
 QUEUE_NAME = "jobs_queue"
 
@@ -121,7 +55,7 @@ def store_results_in_db(conn, job_id, posts):
             logging.error("Error inserting posts into DB: %s", e)
             conn.rollback()
     else:
-        logging.debug("No records to store, skipping DB insert.")
+        logging.debug("No records to store.")
     cur.close()
 
 def update_job_status(conn, job_id, status):
@@ -140,7 +74,7 @@ def process_job(conn, job_id, query):
     logging.info("Processing job %d with query '%s'", job_id, query)
     update_job_status(conn, job_id, 'in_progress')
 
-    scraper = YARS()
+    scraper = YARS()  # Create YARS instance
     posts = scraper.search_reddit(query, limit=10)
 
     if not posts:
